@@ -6,7 +6,7 @@ The server implements a basic SFU one-to-many architecture, and runs YOLOv5 for 
 Run `npm install` inside the root directory to install all necessary packages.
 
 ## Running the server
-Start the server by running `node server.js` in the root directory. By default, the server will run on port 8080 and will not use Turn Servers. To specify the port number and/or TurnServer usage, you can pass the -p flag for port number, and --ts flag for TurnServer (boolean). For example, `node server.js -p 4000 --ts` true runs the server on port 4000 and enables TURN Servers. You can also replace `node` with `nodemon` to automatically restart the server on saving changes.
+Start the server by running `node server.js` in the root directory. By default, the server will run on port 8080 and will not use Turn Servers. To specify the port number and/or TurnServer usage, you can pass the -p flag for port number, and --ts flag for TurnServer (boolean). For example, `node server.js -p 4000 --ts true` runs the server on port 4000 and enables TURN Servers. You can also replace `node` with `nodemon` to automatically restart the server on saving changes.
 
 ### Running locally vs over-the-network
 #### Local Streaming
