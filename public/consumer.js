@@ -1,3 +1,4 @@
+var dataChannelLog = document.getElementById('data-channel');
 const iceServers = [
     {
       urls: "turn:a.relay.metered.ca:80",
@@ -52,6 +53,14 @@ socket.on("useTurnServers", (useTurnServers) => {
     USE_TURN_SERVERS = useTurnServers;
 })
 
+socket.on("sw-detect", (data) => {
+    [hours, minutes, seconds] = getCurrentTime();
+    //dataChannelLog.textContent += `< ${data.sw_state} : ${hours}:${minutes}:${seconds} \n`;
+    console.log(`< ${data.sw_state} : ${hours}:${minutes}:${seconds} \n`)
+   // const elem = document.getElementById("data-channel");
+    //elem.scrollTop = elem.scrollHeight;
+})
+
 async function init() {
     const peer = createPeer();
     peer.addTransceiver("video", { direction: "recvonly" })
@@ -99,11 +108,13 @@ async function handleNegotiationNeededEvent(peer) {
     };
 
     try {
+        
         const { data } = await axios.post('/consumer', payload);
-        const desc = new RTCSessionDescription();
-        peer.setRemoteDescription(data).catch(e => document.getElementById("err-msg").innerText = data.msg);
+        const desc = new RTCSessionDescription({sdp: data.sdp, type: data.type});
+        peer.setRemoteDescription(desc).catch(e => document.getElementById("err-msg").innerText = e);
         document.getElementById("err-msg").innerText = "";
     } catch (err) {
+        console.log(err);
         document.getElementById("err-msg").innerText = "Could not open stream. Broadcast not started yet";
     }
 
@@ -113,3 +124,11 @@ async function handleNegotiationNeededEvent(peer) {
 function handleTrackEvent(e) {
     document.getElementById("video").srcObject = e.streams[0];
 };
+
+function getCurrentTime() {
+    let now = new Date();
+    let hours = now.getHours();
+    let minutes = now.getMinutes();
+    let seconds = now.getSeconds();
+    return [hours, minutes, seconds];
+}

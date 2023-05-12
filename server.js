@@ -14,6 +14,7 @@ const { iceServers } = require("./constants/iceServers.js");
 const { printAttributes, i420ToCanvas } = require("./utils/utils.js");
 const yargs = require('yargs/yargs');
 const { hideBin } = require('yargs/helpers');
+const { PythonShell } = require('python-shell');
 
 // Parse command line arguments with yargs
 const argv = yargs(hideBin(process.argv))
@@ -53,14 +54,24 @@ let loaded_model;
 // socket connected to Rasp Pi Browser to enable ICE handshaking and connection establishment
 let seeSocket;
 
-// socket connected to Rasp Pi Python app to relay detections
+let seeSocketId;
+
+// socket connected to Rasp Pi object recognition service
 let seeRaspPi;
+
+// socket connected to Rasp Pi sidewalk detection service
+let sidewalkSocket;
+
+let sidewalkSocketId;
 
 // stores viewer sockets by socket.id
 let viewers = {};
 
 // used to space out detections
 let x = 0;
+
+// python shell
+let python;
 
 app.use('/viewer', express.static('public/consumer.html'));
 app.use(express.static('public'));
@@ -88,12 +99,19 @@ io.on('connection', (socket) => {
     socket.on("broadcaster", () => {
         console.log('broadcaster connected');
         seeSocket = socket;
+        seeSocketId = socket.id
     })
 
     // detect client receiving detections
     socket.on("see_rasp_pi", () => {
-        console.log('Raspberry Pi Connected');
+        console.log('Object Recognition Service connected');
         seeRaspPi = socket;
+    })
+
+    socket.on("sidewalk_detector", () => {
+        console.log('Sidewalk Detection Service connected')
+        sidewalkSocket = socket;
+        sidewalkSocketId = socket.id;
     })
 
     // if socket emits viewer event, they are the viewing socket
@@ -103,8 +121,16 @@ io.on('connection', (socket) => {
     })
 
     socket.on('disconnect', () => {
-        console.log('user disconnected');
-        seeSocket = null;
+
+        if (socket.id == seeSocketId) {
+            seeSocket = null;
+            console.log('Object Recognition Service disconnected');
+        } else if (socket.id == sidewalkSocketId) {
+            sidewalkSocket = null;
+            console.log('Sidewalk Recognition Service disconnected');
+        } else {
+            console.log('user disconnected');
+        }
     });
 });
 
@@ -143,6 +169,7 @@ app.post("/consumer", async ({ body }, res) => {
             sdp: peer.localDescription.sdp,
             type: peer.localDescription.type
         }
+        console.log(`sending to viewer`)
         res.status(200).json(payload);
     } else {
         res.status(400).send({msg: "Error connecting to stream: stream has not started yet"});
@@ -198,8 +225,12 @@ function handleTrackEvent(e, peer) {
     // triggered on receiving a frame from the broadcaster's video stream
     sink.onframe = async ({frame}) => {
         x++;
+        // if (x % 5 == 0) {
+        //     console.log(`js frame = ${frame.width}, ${frame.height}`);
+        //     python.send(`${frame.width},${frame.height};` + Buffer.from(frame.data).toString('base64'));
+        // }
+        python.send(`${frame.width},${frame.height};` + Buffer.from(frame.data).toString('base64'));
         if (x % 70 == 0) {
-
             const canvas = await i420ToCanvas(frame.data, frame.width, frame.height);
 
             // working with yolov7 web model
@@ -272,6 +303,46 @@ function yolov5OutputToDetections(res) {
 async function loadYolo() {
     loaded_model = await tf.loadGraphModel(`http://localhost:${PORT}/yolov5m_web_model/model.json`);
     console.log(`YOLOv5 model loaded`);
+
+    const scriptPath = 'C:/Users/Ghaith/Desktop/CSE 475/Test Apps/outdoor-blind-navigation/see.py'
+
+    const options = {
+        mode: 'text',
+        pythonOptions: ['-u'],
+        stdio: 'pipe',
+        scriptPath: path.dirname(scriptPath),
+      };
+    
+    python = new PythonShell(path.basename(scriptPath), options);
+    console.log('python shell loaded');
+
+    python.on('message', (message) => {
+        if (sidewalkSocket != null) {
+            try {
+                console.log(JSON.parse(message));
+                sidewalkSocket.emit("detect_sidewalk", JSON.parse(message));
+    
+                // for (let key in viewers) {
+                //     viewers[key].emit("sw-detect", JSON.parse(message));
+                // }
+    
+            } catch (error) {
+                // do nothing
+                console.log(error);
+            }
+        }
+
+    });
+
+    python.on('error', (error) => {
+        console.error(`Error in Python script: ${error}`);
+      });
+
+    // python.end((err) => {
+    //     if (err) {
+    //       console.error(err);
+    //     }
+    //   });
 }
 
 server.listen(PORT, () => {

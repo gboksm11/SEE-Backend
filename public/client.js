@@ -59,6 +59,13 @@ socket.on("useTurnServers", (useTurnServers) => {
     USE_TURN_SERVERS = useTurnServers;
 })
 
+socket.on("sw-detect", (data) => {
+
+    [hours, minutes, seconds] = getCurrentTime();
+    dataChannelLog.textContent += `< ${data.sw_state} : ${hours}:${minutes}:${seconds} \n`;
+    const elem = document.getElementById("data-channel");
+    elem.scrollTop = elem.scrollHeight;
+})
 
 function createPeerConnection() {
     var config = {
@@ -111,24 +118,73 @@ function createPeerConnection() {
     return pc;
 }
 
+// function negotiate() {
+//     console.log("creating offer...");
+//     return pc.createOffer().then(function(offer) {
+//         return pc.setLocalDescription(offer);
+//     }).then(function() {
+//         // wait for ICE gathering to complete
+//         console.log("Gathering ICEEEE");
+//         return new Promise(function(resolve) {
+//             if (pc.iceGatheringState === 'complete') {
+//                 resolve();
+//             } else {
+//                 function checkState() {
+//                     if (pc.iceGatheringState === 'complete') {
+//                         pc.removeEventListener('icegatheringstatechange', checkState);
+//                         resolve();
+//                     }
+//                 }
+//                 pc.addEventListener('icegatheringstatechange', checkState);
+//             }
+//         });
+//     }).then(function() {
+//         var offer = pc.localDescription;
+//         var codec;
+
+//         // codec = document.getElementById('audio-codec').value;
+//         // if (codec !== 'default') {
+//         //     offer.sdp = sdpFilterCodec('audio', codec, offer.sdp);
+//         // }
+
+//         codec = document.getElementById('video-codec').value;
+//         if (codec !== 'default') {
+//             offer.sdp = sdpFilterCodec('video', codec, offer.sdp);
+//         }
+
+//         document.getElementById('offer-sdp').textContent = offer.sdp;
+//         console.log('fetching...');
+//         return fetch('/offer', {
+//             body: JSON.stringify({
+//                 sdp: offer.sdp,
+//                 type: offer.type
+//             }),
+//             headers: {
+//                 'Content-Type': 'application/json'
+//             },
+//             method: 'POST'
+//         });
+//     }).then(function(response) {
+//         console.log("received offer");
+//         return response.json();
+//     }).then(function(answer) {
+//         document.getElementById('answer-sdp').textContent = answer.sdp;
+//         return pc.setRemoteDescription(answer);
+//     }).catch(function(e) {
+//         alert(e);
+//     });
+// }
+
+
 function negotiate() {
     console.log("creating offer...");
     return pc.createOffer().then(function(offer) {
         return pc.setLocalDescription(offer);
     }).then(function() {
         // wait for ICE gathering to complete
+        console.log("Gathering ICEEEE");
         return new Promise(function(resolve) {
-            if (pc.iceGatheringState === 'complete') {
                 resolve();
-            } else {
-                function checkState() {
-                    if (pc.iceGatheringState === 'complete') {
-                        pc.removeEventListener('icegatheringstatechange', checkState);
-                        resolve();
-                    }
-                }
-                pc.addEventListener('icegatheringstatechange', checkState);
-            }
         });
     }).then(function() {
         var offer = pc.localDescription;
@@ -220,7 +276,7 @@ function start() {
                 //height: 640,
             };
         } else {
-            constraints.video = true;
+            constraints.video = {facingMode: 'environment'};
         }
     }
 
@@ -331,4 +387,12 @@ function sdpFilterCodec(kind, codec, realSdp) {
 
 function escapeRegExp(string) {
     return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); // $& means the whole matched string
+}
+
+function getCurrentTime() {
+    let now = new Date();
+    let hours = now.getHours();
+    let minutes = now.getMinutes();
+    let seconds = now.getSeconds();
+    return [hours, minutes, seconds];
 }
