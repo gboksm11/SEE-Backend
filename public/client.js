@@ -27,6 +27,15 @@ const iceServers = [
       }
 ];
 
+let socket = null;
+
+window.onload = async() => {
+    console.log("window loaded");
+    setUpSocket();
+    await delay(2000);
+    start(true);
+}
+
 
 // get DOM elements
 var dataChannelLog = document.getElementById('data-channel'),
@@ -43,29 +52,35 @@ let USE_TURN_SERVERS = false;
 // data channel
 var dc = null, dcInterval = null;
 
-const socket = io();
+function delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
 
-socket.on('connect', () => {
-    console.log('Connected to server');
-    socket.emit("broadcaster");
-});
-  
-socket.on('disconnect', () => {
-    console.log('Disconnected from server');
-});
+function setUpSocket() {
+    socket = io();
 
-socket.on("useTurnServers", (useTurnServers) => {
-    console.log(`use turn servers? ${useTurnServers}`);
-    USE_TURN_SERVERS = useTurnServers;
-})
+    socket.on('connect', () => {
+        console.log('Connected to server');
+        socket.emit("broadcaster");
+    });
+    
+    socket.on('disconnect', () => {
+        console.log('Disconnected from server');
+    });
 
-socket.on("sw-detect", (data) => {
+    socket.on("useTurnServers", (useTurnServers) => {
+        console.log(`use turn servers? ${useTurnServers}`);
+        USE_TURN_SERVERS = useTurnServers;
+    })
 
-    [hours, minutes, seconds] = getCurrentTime();
-    dataChannelLog.textContent += `< ${data.sw_state} : ${hours}:${minutes}:${seconds} \n`;
-    const elem = document.getElementById("data-channel");
-    elem.scrollTop = elem.scrollHeight;
-})
+    socket.on("sw-detect", (data) => {
+
+        [hours, minutes, seconds] = getCurrentTime();
+        dataChannelLog.textContent += `< ${data.sw_state} : ${hours}:${minutes}:${seconds} \n`;
+        const elem = document.getElementById("data-channel");
+        elem.scrollTop = elem.scrollHeight;
+    });
+}
 
 function createPeerConnection() {
     var config = {
@@ -78,12 +93,24 @@ function createPeerConnection() {
 
     pc = new RTCPeerConnection(config);
 
+    // renegotiate peer connection with viewer's audio track
+    socket.on("offer", async(message) => {
+        console.log("RECEIVING NEW PEER OFFER FROM SERVER");
+        await pc.setRemoteDescription(message.description);
+        await pc.setLocalDescription(await pc.createAnswer());
+        socket.emit("answer", {description: pc.localDescription});
+    })
+
     pc.onicecandidate = (e) => {
         if (e.candidate != null) {
             socket.emit("icecandidate", e.candidate);
         } else {
             console.log("ICE gathering complete");
         }
+    }
+
+    pc.onnegotiationneeded = (e) => {
+        console.log(e);
     }
 
     socket.on("icecandidate", (candidate) => {
@@ -109,10 +136,15 @@ function createPeerConnection() {
 
     // connect audio / video
     pc.addEventListener('track', function(evt) {
+        console.log(evt.track.id);
         if (evt.track.kind == 'video')
             document.getElementById('video').srcObject = evt.streams[0];
-        else
+        else {
+            console.log("AUDIOOOOOOOOOOOOO");
+            console.log(evt.streams);
             document.getElementById('audio').srcObject = evt.streams[0];
+        }
+
     });
 
     return pc;
@@ -202,6 +234,7 @@ function negotiate() {
 
         document.getElementById('offer-sdp').textContent = offer.sdp;
         console.log('fetching...');
+        console.log(socket);
         return fetch('/offer', {
             body: JSON.stringify({
                 sdp: offer.sdp,
@@ -223,7 +256,7 @@ function negotiate() {
     });
 }
 
-function start() {
+function start(useVideo) {
     document.getElementById('start').style.display = 'none';
 
     pc = createPeerConnection();
@@ -261,11 +294,11 @@ function start() {
     }
 
     var constraints = {
-        audio: false,
-        video: false
+        audio: true,
+        video: true
     };
 
-    if (document.getElementById('use-video').checked) {
+    if (useVideo) {
         var resolution = document.getElementById('video-resolution').value;
         if (resolution) {
             resolution = resolution.split('x');
@@ -286,6 +319,8 @@ function start() {
         }
         navigator.mediaDevices.getUserMedia(constraints).then(function(stream) {
             stream.getTracks().forEach(function(track) {
+                console.log(`Adding my tracks, this track =`);
+                console.log(track);
                 pc.addTrack(track, stream);
             });
             return negotiate();

@@ -6,7 +6,12 @@ const webrtc = require("wrtc");
 const http = require('http');
 const server = http.createServer(app);
 const { Server } = require("socket.io");
-const io = new Server(server);
+const io = new Server(server, {
+    cors: {
+        origin: '*',
+    }
+});
+const cors = require('cors');
 const { RTCVideoSink } = require('wrtc').nonstandard;
 const tf = require('@tensorflow/tfjs-node-gpu');
 const { labels } = require("./constants/labels.js");
@@ -15,6 +20,7 @@ const { printAttributes, i420ToCanvas } = require("./utils/utils.js");
 const yargs = require('yargs/yargs');
 const { hideBin } = require('yargs/helpers');
 const { PythonShell } = require('python-shell');
+const { trace } = require('console');
 
 // Parse command line arguments with yargs
 const argv = yargs(hideBin(process.argv))
@@ -48,6 +54,8 @@ console.log(USE_TURN_SERVERS);
 // stores broadcaster's track, used to forward track to viewers
 let senderStream;
 
+let senderAudio;
+
 // yolov5 model
 let loaded_model;
 
@@ -73,10 +81,18 @@ let x = 0;
 // python shell
 let python;
 
+let peerConnections = {};
+
 app.use('/viewer', express.static('public/consumer.html'));
 app.use(express.static('public'));
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
+io.se
+app.use(cors(
+    {
+        origin: '*'
+    }
+));
 
 app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
@@ -149,11 +165,20 @@ app.post("/consumer", async ({ body }, res) => {
         const peer = new webrtc.RTCPeerConnection({
             iceServers: iceServers
         });
+
+        peerConnections[client_id] = peer;
     
         peer.onicecandidate = e => {
             if (e.candidate != null) {
                 viewers[client_id].emit("icecandidate", e.candidate);
             }
+        }
+
+        peer.ontrack = (e) => {
+            console.log("tracks coming from peer");
+            console.log(`track id = ${e.track.id}, track kind = ${e.track.kind}`);
+            peerConnections["broadcaster-pc"].addTrack(e.track, senderAudio);
+            //peer.addTrack(e.track);
         }
     
         viewers[client_id].on("icecandidate", (candidate) => {
@@ -162,7 +187,11 @@ app.post("/consumer", async ({ body }, res) => {
     
         const desc = new webrtc.RTCSessionDescription({sdp: sdp, type: type});
         await peer.setRemoteDescription(desc);
-        senderStream.getTracks().forEach(track => peer.addTrack(track, senderStream));
+        senderStream.getTracks().forEach(track => {
+            console.log(`id = ${track.id}, kind = ${track.kind}`);
+            peer.addTrack(track, senderStream)
+        });
+        //senderAudio.getTracks().forEach(track => peer.addTrack(track, senderAudio));
         const answer = await peer.createAnswer();
         await peer.setLocalDescription(answer);
         const payload = {
@@ -185,12 +214,26 @@ app.post('/offer', async ({ body }, res) => {
         const peer = new webrtc.RTCPeerConnection({
             iceServers: iceServers
         });
+
+        peerConnections["broadcaster-pc"] = peer;
     
         peer.onicecandidate = e => {
             if (e.candidate != null) {
                 seeSocket.emit("icecandidate", e.candidate);
             }
         }
+
+        peer.onnegotiationneeded = async(e) => {
+            console.log("SENDING NEW NEGOTIATION FOR CLIENT PEER");
+            await peer.setLocalDescription(await peer.createOffer());
+            seeSocket.emit("offer", {description: peer.localDescription});
+        }
+
+        seeSocket.on("answer", async(message) => {
+            console.log("RECEIVED ANSWER FOR NEW NEGOTIATION");
+            await peer.setRemoteDescription(message.description);
+            console.log("done");
+        })
     
         seeSocket.on("icecandidate", (candidate) => {
             peer.addIceCandidate(candidate);
@@ -217,41 +260,38 @@ app.post('/offer', async ({ body }, res) => {
 
 // receives track from broadcaster and handles it
 function handleTrackEvent(e, peer) {
-    console.log(e.track.id);
-    senderStream = e.streams[0];
+    
+    console.log("Receiving tracks from client");
+    console.log(`track id = ${e.track.id} and kind = ${e.track.kind}`);
+
     const track = e.track;
-    const sink = new RTCVideoSink(track);
-
-    // triggered on receiving a frame from the broadcaster's video stream
-    sink.onframe = async ({frame}) => {
-        x++;
-        // if (x % 5 == 0) {
-        //     console.log(`js frame = ${frame.width}, ${frame.height}`);
-        //     python.send(`${frame.width},${frame.height};` + Buffer.from(frame.data).toString('base64'));
-        // }
-        python.send(`${frame.width},${frame.height};` + Buffer.from(frame.data).toString('base64'));
-        if (x % 70 == 0) {
-            const canvas = await i420ToCanvas(frame.data, frame.width, frame.height);
-
-            // working with yolov7 web model
-            tf.engine().startScope();
-            // const input = tf.tidy(() => {
-            //     const img = tf.image.resizeBilinear(tf.browser.fromPixels(canvas), [640, 640]).div(255.0).transpose([2, 0, 1]).expandDims(0);
-            //     return img;
-            // })
-
-            // yolov5/v8 web model
-            const input = tf.tidy(() => {
-                const img = tf.image.resizeBilinear(tf.browser.fromPixels(canvas), [640, 640]).div(255.0).expandDims(0);
-                return img;
-            })
-
-            let predictions = await loaded_model.executeAsync(input);
-            
-            yolov5OutputToDetections(predictions);
-            tf.engine().endScope();
+    if (track.kind == "video") {
+        senderStream = e.streams[0];
+        const sink = new RTCVideoSink(track);
+    
+        // triggered on receiving a frame from the broadcaster's video stream
+        sink.onframe = async ({frame}) => {
+            x++;
+            python.send(`${frame.width},${frame.height};` + Buffer.from(frame.data).toString('base64'));
+            if (x % 70 == 0) {
+                const canvas = await i420ToCanvas(frame.data, frame.width, frame.height);
+    
+                tf.engine().startScope();
+                const input = tf.tidy(() => {
+                    const img = tf.image.resizeBilinear(tf.browser.fromPixels(canvas), [640, 640]).div(255.0).expandDims(0);
+                    return img;
+                })
+    
+                let predictions = await loaded_model.executeAsync(input);
+                
+                yolov5OutputToDetections(predictions);
+                tf.engine().endScope();
+            }
         }
+    } else {
+        senderAudio = e.streams[0];
     }
+
 };
 
 function yolov5OutputToDetections(res) {
@@ -319,7 +359,7 @@ async function loadYolo() {
     python.on('message', (message) => {
         if (sidewalkSocket != null) {
             try {
-                console.log(JSON.parse(message));
+
                 sidewalkSocket.emit("detect_sidewalk", JSON.parse(message));
     
                 // for (let key in viewers) {
@@ -328,7 +368,7 @@ async function loadYolo() {
     
             } catch (error) {
                 // do nothing
-                console.log(error);
+                //console.log(error);
             }
         }
 

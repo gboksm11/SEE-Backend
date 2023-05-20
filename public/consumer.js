@@ -108,7 +108,6 @@ async function handleNegotiationNeededEvent(peer) {
     };
 
     try {
-        
         const { data } = await axios.post('/consumer', payload);
         const desc = new RTCSessionDescription({sdp: data.sdp, type: data.type});
         peer.setRemoteDescription(desc).catch(e => document.getElementById("err-msg").innerText = e);
@@ -117,8 +116,6 @@ async function handleNegotiationNeededEvent(peer) {
         console.log(err);
         document.getElementById("err-msg").innerText = "Could not open stream. Broadcast not started yet";
     }
-
-
 }
 
 function handleTrackEvent(e) {
