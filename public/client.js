@@ -1,3 +1,7 @@
+// The client.js file is the script running on the client.html webpage running on SEE. It starts a webrtc
+// connection to the YOLO server, which would livestream video feed from the SEE glasses to the YOLO server.
+
+// List of ICE servers used to establish cross-network webrtc connection
 const iceServers = [
     {
       urls: "turn:a.relay.metered.ca:80",
@@ -29,33 +33,30 @@ const iceServers = [
 
 let socket = null;
 
+// automatically establish a webrtc connection with YOLO server
+// on window load and start streaming video/audio
 window.onload = async() => {
     console.log("window loaded");
     setUpSocket();
     await delay(2000);
-    start(true);
+    start();
 }
 
 
-// get DOM elements
+// get DOM elements for debugging connection state
 var dataChannelLog = document.getElementById('data-channel'),
     iceConnectionLog = document.getElementById('ice-connection-state'),
     iceGatheringLog = document.getElementById('ice-gathering-state'),
     signalingLog = document.getElementById('signaling-state');
 
-// peer connection
+// webrtc peer connection
 var pc = null;
 
 // flag indicating whether or not to use TURN servers
 let USE_TURN_SERVERS = false;
 
-// data channel
-var dc = null, dcInterval = null;
-
-function delay(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
-
+// establish socket connection to YOLO server, used to handle ICE candidate
+// trickling as well as configuring use of TURN servers
 function setUpSocket() {
     socket = io();
 
@@ -82,6 +83,7 @@ function setUpSocket() {
     });
 }
 
+// creates a new webrtc connection
 function createPeerConnection() {
     var config = {
         sdpSemantics: 'unified-plan'
@@ -96,6 +98,7 @@ function createPeerConnection() {
     // renegotiate peer connection with viewer's audio track
     socket.on("offer", async(message) => {
         console.log("RECEIVING NEW PEER OFFER FROM SERVER");
+        console.log(pc.signalingState);
         await pc.setRemoteDescription(message.description);
         await pc.setLocalDescription(await pc.createAnswer());
         socket.emit("answer", {description: pc.localDescription});
@@ -109,16 +112,12 @@ function createPeerConnection() {
         }
     }
 
-    pc.onnegotiationneeded = (e) => {
-        console.log(e);
-    }
-
     socket.on("icecandidate", (candidate) => {
         console.log(`received ice candidate from server`);
         pc.addIceCandidate(candidate);
     })
 
-    //register some listeners to help debugging
+    // register some listeners to help debugging
     pc.addEventListener('icegatheringstatechange', function() {
         iceGatheringLog.textContent += ' -> ' + pc.iceGatheringState;
     }, false);
@@ -126,6 +125,10 @@ function createPeerConnection() {
 
     pc.addEventListener('iceconnectionstatechange', function() {
         iceConnectionLog.textContent += ' -> ' + pc.iceConnectionState;
+        if (pc.iceConnectionState == "disconnected") {
+            console.log("renegotiating");
+            location.reload();
+        }
     }, false);
     iceConnectionLog.textContent = pc.iceConnectionState;
 
@@ -150,64 +153,8 @@ function createPeerConnection() {
     return pc;
 }
 
-// function negotiate() {
-//     console.log("creating offer...");
-//     return pc.createOffer().then(function(offer) {
-//         return pc.setLocalDescription(offer);
-//     }).then(function() {
-//         // wait for ICE gathering to complete
-//         console.log("Gathering ICEEEE");
-//         return new Promise(function(resolve) {
-//             if (pc.iceGatheringState === 'complete') {
-//                 resolve();
-//             } else {
-//                 function checkState() {
-//                     if (pc.iceGatheringState === 'complete') {
-//                         pc.removeEventListener('icegatheringstatechange', checkState);
-//                         resolve();
-//                     }
-//                 }
-//                 pc.addEventListener('icegatheringstatechange', checkState);
-//             }
-//         });
-//     }).then(function() {
-//         var offer = pc.localDescription;
-//         var codec;
-
-//         // codec = document.getElementById('audio-codec').value;
-//         // if (codec !== 'default') {
-//         //     offer.sdp = sdpFilterCodec('audio', codec, offer.sdp);
-//         // }
-
-//         codec = document.getElementById('video-codec').value;
-//         if (codec !== 'default') {
-//             offer.sdp = sdpFilterCodec('video', codec, offer.sdp);
-//         }
-
-//         document.getElementById('offer-sdp').textContent = offer.sdp;
-//         console.log('fetching...');
-//         return fetch('/offer', {
-//             body: JSON.stringify({
-//                 sdp: offer.sdp,
-//                 type: offer.type
-//             }),
-//             headers: {
-//                 'Content-Type': 'application/json'
-//             },
-//             method: 'POST'
-//         });
-//     }).then(function(response) {
-//         console.log("received offer");
-//         return response.json();
-//     }).then(function(answer) {
-//         document.getElementById('answer-sdp').textContent = answer.sdp;
-//         return pc.setRemoteDescription(answer);
-//     }).catch(function(e) {
-//         alert(e);
-//     });
-// }
-
-
+// creates an offer for the webrtc connection and sends it to the YOLO server
+// receives an answer from the server in order to establish the connection
 function negotiate() {
     console.log("creating offer...");
     return pc.createOffer().then(function(offer) {
@@ -256,7 +203,9 @@ function negotiate() {
     });
 }
 
-function start(useVideo) {
+// creates a webrtc connection, appends local video/audio tracks to the connection
+// and begins negotiation with YOLO server to establish a connection
+function start() {
     document.getElementById('start').style.display = 'none';
 
     pc = createPeerConnection();
@@ -272,51 +221,26 @@ function start(useVideo) {
         }
     }
 
-    if (document.getElementById('use-datachannel').checked) {
-        var parameters = JSON.parse(document.getElementById('datachannel-parameters').value);
-
-        dc = pc.createDataChannel('chat', parameters);
-        dc.onclose = function() {
-            clearInterval(dcInterval);
-            dataChannelLog.textContent += '- close\n';
-        };
-        dc.onopen = function() {
-            dataChannelLog.textContent += '- open\n';
-            var message = 'ping ' + current_stamp();
-            dataChannelLog.textContent += '> ' + message + '\n';
-            dc.send(message);
-        };
-        dc.onmessage = function(evt) {
-            dataChannelLog.textContent += '< ' + evt.data + '\n';
-            const elem = document.getElementById("data-channel");
-            elem.scrollTop = elem.scrollHeight;
-        };
-    }
-
     var constraints = {
-        audio: true,
+        audio: false,
         video: true
     };
 
-    if (useVideo) {
-        var resolution = document.getElementById('video-resolution').value;
-        if (resolution) {
-            resolution = resolution.split('x');
-            constraints.video = {
-                width: parseInt(resolution[0], 0),
-                height: parseInt(resolution[1], 0)
-                //width: 640,
-                //height: 640,
-            };
-        } else {
-            constraints.video = {facingMode: 'environment'};
-        }
+    var resolution = document.getElementById('video-resolution').value;
+    if (resolution) {
+        resolution = resolution.split('x');
+        constraints.video = {
+            width: parseInt(resolution[0], 0),
+            height: parseInt(resolution[1], 0)
+            //width: 640,
+            //height: 640,
+        };
+    } else {
+        constraints.video = {facingMode: 'environment'};
     }
 
     if (constraints.audio || constraints.video) {
-        if (constraints.video) {
-            //document.getElementById('media').style.display = 'block';
-        }
+
         navigator.mediaDevices.getUserMedia(constraints).then(function(stream) {
             stream.getTracks().forEach(function(track) {
                 console.log(`Adding my tracks, this track =`);
@@ -327,7 +251,6 @@ function start(useVideo) {
         }, function(err) {
             alert('Could not acquire media: ' + err);
         });
-        console.log("could not get media");
     } else {
         negotiate();
     }
@@ -337,11 +260,6 @@ function start(useVideo) {
 
 function stop() {
     document.getElementById('stop').style.display = 'none';
-
-    // close data channel
-    if (dc) {
-        dc.close();
-    }
 
     // close transceivers
     if (pc.getTransceivers) {
@@ -424,6 +342,12 @@ function escapeRegExp(string) {
     return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); // $& means the whole matched string
 }
 
+// generates a delay of x ms
+function delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// fetches the current time in HH:MM:SS format
 function getCurrentTime() {
     let now = new Date();
     let hours = now.getHours();

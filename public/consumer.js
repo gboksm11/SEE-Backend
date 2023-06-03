@@ -1,3 +1,6 @@
+// The consumer.js file is the script running on the consumer.html webpage running on SEE. It starts a webrtc
+// connection to the YOLO server to view the livestream from the SEE glasses.
+
 var dataChannelLog = document.getElementById('data-channel');
 const iceServers = [
     {
@@ -73,7 +76,34 @@ function createPeer() {
     };
 
     if (USE_TURN_SERVERS) {
-        config.iceServers = iceServers
+        config.iceServers = [
+            {
+              urls: "turn:a.relay.metered.ca:80",
+              username: "fdd847241ab7b147627153c0",
+              credential: "0QPoad1AE+/izw2H",
+            },
+            {
+              urls: "turn:a.relay.metered.ca:80?transport=tcp",
+              username: "fdd847241ab7b147627153c0",
+              credential: "0QPoad1AE+/izw2H",
+            },
+            {
+              urls: "turn:a.relay.metered.ca:443",
+              username: "fdd847241ab7b147627153c0",
+              credential: "0QPoad1AE+/izw2H",
+            },
+            {
+              urls: "turn:a.relay.metered.ca:443?transport=tcp",
+              username: "fdd847241ab7b147627153c0",
+              credential: "0QPoad1AE+/izw2H",
+            },
+        
+              { 
+                "urls": "turn:TURN_IP?transport=tcp",
+                "username": "TURN_USERNAME",
+                "credential": "TURN_CREDENTIALS"
+              }
+        ]
     }
 
 

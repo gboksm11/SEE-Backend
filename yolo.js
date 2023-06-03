@@ -1,3 +1,12 @@
+// The YOLO.js file represents the main server that communicates with the SEE glasses.
+// The server first handles establishing a webrtc connection between the client (SEE glasses)
+// and the server. Upon successful connection, it runs the YOLO model on video frames from the
+// video stream, and relays detections to the SEE glasses. Upon switching to street mode,
+// the server also runs the sidewalk detection model on the video frames. Finally, the server
+// acts as an intermediary between the client and the webapp, relaying settings updates to the
+// SEE glasses, and learn face requests from the glasses to the web app. 
+
+// import libraries used
 const express = require('express');
 const path = require("path");
 const app = express();
@@ -16,11 +25,12 @@ const { RTCVideoSink } = require('wrtc').nonstandard;
 const tf = require('@tensorflow/tfjs-node-gpu');
 const { labels } = require("./constants/labels.js");
 const { iceServers } = require("./constants/iceServers.js");
-const { printAttributes, i420ToCanvas } = require("./utils/utils.js");
+const { printAttributes, i420ToCanvas, saveAsJpg, canvasToPng } = require("./utils/utils.js");
 const yargs = require('yargs/yargs');
 const { hideBin } = require('yargs/helpers');
 const { PythonShell } = require('python-shell');
 const { trace } = require('console');
+const fs = require('fs');
 
 // Parse command line arguments with yargs
 const argv = yargs(hideBin(process.argv))
@@ -54,6 +64,7 @@ console.log(USE_TURN_SERVERS);
 // stores broadcaster's track, used to forward track to viewers
 let senderStream;
 
+// stores broadcaster's audio track
 let senderAudio;
 
 // yolov5 model
@@ -62,6 +73,7 @@ let loaded_model;
 // socket connected to Rasp Pi Browser to enable ICE handshaking and connection establishment
 let seeSocket;
 
+// ID of SEE webrtc client
 let seeSocketId;
 
 // socket connected to Rasp Pi object recognition service
@@ -70,7 +82,17 @@ let seeRaspPi;
 // socket connected to Rasp Pi sidewalk detection service
 let sidewalkSocket;
 
+// id of sidewalk detection service socket
 let sidewalkSocketId;
+
+// webapp socket
+let reactSocket;
+
+// webapp handler socket (running on SEE glasses)
+let raspiWebHandlerSocket;
+
+// the most recent frame received by the server
+let currentFrame = null;
 
 // stores viewer sockets by socket.id
 let viewers = {};
@@ -81,13 +103,14 @@ let x = 0;
 // python shell
 let python;
 
+// list of all webrtc connections
 let peerConnections = {};
 
+// handle relevant middleware
 app.use('/viewer', express.static('public/consumer.html'));
 app.use(express.static('public'));
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
-io.se
 app.use(cors(
     {
         origin: '*'
@@ -102,10 +125,13 @@ app.use((req, res, next) => {
 
 /*
   HANDLE SOCKET CONNECTIONS
-  THREE TYPES OF CONNECTIONS:
+  SIX TYPES OF CONNECTIONS:
    - BROADCASTER: Rasp Pi Cam (from browser)
    - VIEWER: viewer connected to cam stream
    - RASP-PI: Rasp Pi Python app (to get detections)
+   - WEB_APP_HANDLER: Rasp Pi Python app (to relay webapp / see requests)
+   - REACT_APP: (to relay web app requests)
+   - SIDEWALK: relays sidewalk detections
 */
 io.on('connection', (socket) => {
 
@@ -122,19 +148,98 @@ io.on('connection', (socket) => {
     socket.on("see_rasp_pi", () => {
         console.log('Object Recognition Service connected');
         seeRaspPi = socket;
-    })
+    });
 
+    // if socket emits sidewalk_detector, they are sidewalk detections socket
     socket.on("sidewalk_detector", () => {
         console.log('Sidewalk Detection Service connected')
         sidewalkSocket = socket;
         sidewalkSocketId = socket.id;
-    })
+    });
 
     // if socket emits viewer event, they are the viewing socket
     socket.on("viewer", () => {
         console.log('viewer connected');
         viewers[socket.id] = socket;
-    })
+    });
+
+    // if socket emits react app event, they are web app
+    // handle relaying see-requests (web app requests to configure SEE settings)
+    socket.on("react-app-real", () => {
+        console.log(`react app connected, id = ${socket.id}`);
+        reactSocket = socket;
+
+        reactSocket.on("see-request", async(data, callback) => {
+
+            if (raspiWebHandlerSocket != null) {
+                raspiWebHandlerSocket.timeout(5000).emit("see-request", data, (err, response_code) => {
+                    if (err) {
+                        callback(500);
+                    } else {
+                        callback(response_code);
+                    }
+                })
+            } else {
+                //send back that request failed
+                callback(500);
+            }
+        });
+
+
+        // handle yolo-requests (requests sent from webapp to server, i.e getting all learned faces)
+        reactSocket.on("yolo-request", async(callback) => {
+            const facesDirectory = path.join(__dirname, "public", "faces");
+
+            fs.readdir(facesDirectory, (err, files) => {
+                if (err) {
+                  return callback(null, 500);
+                }
+            
+                // Send the file names as the response
+                callback(files, 200);
+              });
+        });
+    });
+
+
+    // if socket emits web-app-handler event, they are web app handler
+    socket.on("web-app-handler", () => {
+        console.log("web app handler connected");
+        raspiWebHandlerSocket = socket;
+
+        // handles request made by glasses to learn a new face. Sends request to web app, and waits for response.
+        // On response, saves face as image with corresponding face id and string (name), and sends back name
+        // to SEE to be stored as audio. Once response is received by SEE, face is successfully learned.
+        raspiWebHandlerSocket.on("learn-face", (data, callback) => {
+            if (reactSocket != null) {
+                if (currentFrame) {
+                    const userPic = {...currentFrame}
+                    reactSocket.timeout(20000).emit("learn-face", userPic, (err, name, response_code) => {
+                        if (err) {
+                            callback(null, 500);
+                        } else {
+                            if (response_code == 500) {
+                                callback(null, 500);
+                                return;
+                            }
+                            i420ToCanvas(userPic.data, userPic.width, userPic.height)
+                                .then(canvas => canvasToPng(canvas, `${data}_${name}.png`))
+                                .then(success => callback(name, 200))
+                                .catch(err => {
+                                    console.log(`Err saving image, ${err}`);
+                                    callback(null, 500)
+                                });
+                        }
+                    });
+                }
+
+            } else {
+                callback(null, 500);
+            }
+        });
+
+    });
+
 
     socket.on('disconnect', () => {
 
@@ -145,7 +250,11 @@ io.on('connection', (socket) => {
             sidewalkSocket = null;
             console.log('Sidewalk Recognition Service disconnected');
         } else {
-            console.log('user disconnected');
+            console.log(`user ${socket.id} disconnected`);
+            if (peerConnections[socket.id]) {
+                console.log("closing viewer pc");
+                peerConnections[socket.id].close();
+            }
         }
     });
 });
@@ -169,9 +278,7 @@ app.post("/consumer", async ({ body }, res) => {
         peerConnections[client_id] = peer;
     
         peer.onicecandidate = e => {
-            if (e.candidate != null) {
-                viewers[client_id].emit("icecandidate", e.candidate);
-            }
+            viewers[client_id].emit("icecandidate", e.candidate);
         }
 
         peer.ontrack = (e) => {
@@ -231,8 +338,10 @@ app.post('/offer', async ({ body }, res) => {
 
         seeSocket.on("answer", async(message) => {
             console.log("RECEIVED ANSWER FOR NEW NEGOTIATION");
-            await peer.setRemoteDescription(message.description);
-            console.log("done");
+            if (peer.signalingState != "stable") {
+                await peer.setRemoteDescription(message.description);
+                console.log("done");
+            }
         })
     
         seeSocket.on("icecandidate", (candidate) => {
@@ -258,6 +367,7 @@ app.post('/offer', async ({ body }, res) => {
     console.log("sent offer to broadcaster");
 });
 
+
 // receives track from broadcaster and handles it
 function handleTrackEvent(e, peer) {
     
@@ -270,7 +380,12 @@ function handleTrackEvent(e, peer) {
         const sink = new RTCVideoSink(track);
     
         // triggered on receiving a frame from the broadcaster's video stream
+        // on receiving a frame, turn the frame into an rgb frame, resize it,
+        // and insert into the YOLO model. Get the predictions and send back
+        // to SEE. Additionally, send frames to sidewalk detection model running
+        // in a python environment.
         sink.onframe = async ({frame}) => {
+            currentFrame = frame;
             x++;
             python.send(`${frame.width},${frame.height};` + Buffer.from(frame.data).toString('base64'));
             if (x % 70 == 0) {
@@ -294,6 +409,9 @@ function handleTrackEvent(e, peer) {
 
 };
 
+// Given the output of the YOLO model, parse the output as detections with
+// the different classes detected, the count of each class, and the confidence
+// levels. Send the parsed output to SEE.
 function yolov5OutputToDetections(res) {
 
     const [boxes, scores, classes, valid_detections] = res;
@@ -307,9 +425,6 @@ function yolov5OutputToDetections(res) {
     const detections = [];
 
     for (var i = 0; i < valid_detections_data; ++i) {
-
-        //let [x1, y1, x2, y2] = boxes_data.slice(i * 4, (i + 1) * 4);
-
         const klass = labels[classes_data[i]];
         const score = scores_data[i].toFixed(2);
 
@@ -329,17 +444,17 @@ function yolov5OutputToDetections(res) {
     }
 
     // print detections
-    //detections.map(detection => printAttributes(detection));
     console.log(detections);
     console.log();
     console.log();
     if (seeRaspPi) {
         seeRaspPi.emit('detections', JSON.stringify(detections));
     }
-
-    
 }
 
+// load the YOLO model. Spawn a python shell in order to communicate with the sidewalk detection model
+// running in a python environment. Handles outputs of the sidewalk detection model by sending them
+// to SEE
 async function loadYolo() {
     loaded_model = await tf.loadGraphModel(`http://localhost:${PORT}/yolov5m_web_model/model.json`);
     console.log(`YOLOv5 model loaded`);
@@ -357,15 +472,11 @@ async function loadYolo() {
     console.log('python shell loaded');
 
     python.on('message', (message) => {
-        if (sidewalkSocket != null) {
+        if (sidewalkSocket != null || true) {
             try {
-
-                sidewalkSocket.emit("detect_sidewalk", JSON.parse(message));
-    
-                // for (let key in viewers) {
-                //     viewers[key].emit("sw-detect", JSON.parse(message));
-                // }
-    
+                const msg = JSON.parse(message);
+                sidewalkSocket.emit("detect_sidewalk", msg);
+                console.log(msg);
             } catch (error) {
                 // do nothing
                 //console.log(error);
@@ -377,14 +488,9 @@ async function loadYolo() {
     python.on('error', (error) => {
         console.error(`Error in Python script: ${error}`);
       });
-
-    // python.end((err) => {
-    //     if (err) {
-    //       console.error(err);
-    //     }
-    //   });
 }
 
+// Start the server, load the models, and listen at specified port.
 server.listen(PORT, () => {
     console.log(`Server started at port ${PORT} | Turn Servers ${USE_TURN_SERVERS ? 'enabled' : 'disabled'}`);
     loadYolo();

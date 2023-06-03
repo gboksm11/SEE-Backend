@@ -1,5 +1,11 @@
-const { createCanvas, ImageData } = require('canvas');
+// Utils.js defines a couple of helper functions used in yolo.js
 
+const { createCanvas, ImageData, toDataURL } = require('canvas');
+const sharp = require('sharp');
+const path = require('path');
+const fs = require('fs');
+
+// recursively prints out all attributes of a given object
 function printAttributes(obj, prefix = '') {
     for (const key in obj) {
         if (typeof obj[key] === 'object' && obj[key] !== null) {
@@ -12,6 +18,24 @@ function printAttributes(obj, prefix = '') {
     console.log();
 }
 
+// converts a Canvas object to a png file, and saves it in the ./faces directory
+async function canvasToPng(canvas, fileName) {
+        // Convert canvas to PNG data URL
+        const buffer = canvas.toBuffer('image/png');
+    
+        // Convert base64 data to buffer
+        //const buffer = Buffer.from(base64Data, 'base64');
+    
+        // Specify the output file path
+        const outputDirectory = path.join(__dirname, '..', 'public', 'faces', fileName);
+    
+        // Save the buffer as an image file
+        await fs.promises.writeFile(outputDirectory, buffer);
+    
+        console.log('Image saved successfully.');
+}
+
+// converts an i420 frame to a canvas object
 async function i420ToCanvas(data, width, height) {
     // Convert I420 (YUV420p) to RGB
     const ySize = width * height;
@@ -63,7 +87,8 @@ async function i420ToCanvas(data, width, height) {
 
 module.exports = {
     printAttributes: printAttributes,
-    i420ToCanvas: i420ToCanvas
+    i420ToCanvas: i420ToCanvas,
+    canvasToPng: canvasToPng
 }
 
 exports.printAttributes = printAttributes;
